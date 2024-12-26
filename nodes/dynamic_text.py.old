@@ -1,0 +1,211 @@
+from typing import Dict, Any, Tuple, Union, List
+import random
+
+
+class ALF_DynamicText:
+    """
+    Node for generating dynamic text with random choices from templates.
+    Supports unlimited nested {a|b|c} syntax with empty options, counter-based cycling,
+    and autoincrement.
+    """
+
+    def __init__(self):
+        """Initialize instance-specific counter."""
+        self.instance_counter = -1
+
+    @classmethod
+    def INPUT_TYPES(cls) -> Dict[str, Any]:
+        """Define input types with current counter value."""
+        return {
+            "required": {
+                "text": ("STRING", {
+                    "multiline": True,
+                    "default": "Hello {fast|slow|{small|huge}} {green|red|blue} car!"
+                }),
+                "seed": ("INT", {
+                    "default": 0,
+                    "min": 0,
+                    "max": 0xffffffffffffffff
+                }),
+                "counter": ("INT", {
+                    "default": -1,
+                    "min": -1,
+                    "max": 0xffffffffffffffff
+                }),
+                "shuffle_mode": ("BOOLEAN", {
+                    "default": False
+                }),
+                "autoincrement": ("BOOLEAN", {
+                    "default": False
+                })
+            },
+            "hidden": { "node_id": "UNIQUE_ID" },
+            "optional": {
+                "input_text": ("STRING",)
+            }
+        }
+
+    RETURN_TYPES = ("STRING", "INT")
+    RETURN_NAMES = ("text", "counter")
+    FUNCTION = "process_text"
+    CATEGORY = "alf_nodes/text"
+
+    def parse_pattern(self, text: str, pos: int = 0) -> Tuple[Union[str, List[str]], int]:
+        """
+        Parse a pattern starting at the given position.
+        Handles nested patterns and empty options.
+
+        Args:
+            text: Input text to parse
+            pos: Starting position
+
+        Returns:
+            Tuple of (parsed_result, new_position)
+            parsed_result can be either a string or list of options
+        """
+        if pos >= len(text) or text[pos] != '{':
+            return text[pos:], len(text)
+
+        options = []
+        current = []
+        i = pos + 1  # Skip opening brace
+
+        while i < len(text):
+            char = text[i]
+
+            if char == '{':
+                # Start of nested pattern
+                nested_result, new_pos = self.parse_pattern(text, i)
+                current.extend(nested_result if isinstance(nested_result, str) else ['{' + '|'.join(nested_result) + '}'])
+                i = new_pos
+            elif char == '}':
+                # End of current pattern
+                options.append(''.join(current))
+                return options, i + 1
+            elif char == '|':
+                # Option separator
+                options.append(''.join(current))
+                current = []
+                i += 1
+            else:
+                current.append(char)
+                i += 1
+
+        # If we reach here, we had an unclosed pattern
+        # Return the partial result as a string
+        return text[pos:], len(text)
+
+    def expand_pattern(self, pattern: Union[str, List[str]]) -> List[str]:
+        """
+        Recursively expand a pattern into all possible combinations.
+
+        Args:
+            pattern: Either a string or list of pattern options
+
+        Returns:
+            List of all possible expanded strings
+        """
+        if isinstance(pattern, str):
+            if '{' not in pattern:
+                return [pattern]
+
+            # Find and expand all patterns in the string
+            results = ['']
+            i = 0
+            while i < len(pattern):
+                if pattern[i] == '{':
+                    nested_pattern, new_pos = self.parse_pattern(pattern, i)
+                    if isinstance(nested_pattern, list):
+                        nested_expanded = []
+                        for option in nested_pattern:
+                            option_expanded = self.expand_pattern(option)
+                            nested_expanded.extend(option_expanded)
+
+                        new_results = []
+                        for result in results:
+                            for expanded in nested_expanded:
+                                new_results.append(result + expanded)
+                        results = new_results
+                        i = new_pos
+                    else:
+                        # Handle invalid pattern as literal
+                        for j in range(len(results)):
+                            results[j] += pattern[i]
+                        i += 1
+                else:
+                    for j in range(len(results)):
+                        results[j] += pattern[i]
+                    i += 1
+            return results
+
+        # For a list of patterns, expand each one
+        expanded = []
+        for option in pattern:
+            expanded.extend(self.expand_pattern(option))
+        return expanded
+
+    def get_combination(self, combinations: List[str], index: int) -> str:
+        """Get a specific combination by index with wraparound."""
+        if not combinations:
+            return ""
+        return combinations[index % len(combinations)]
+
+    @classmethod
+    def IS_CHANGED(cls, text: str, seed: int, counter: int,
+                   shuffle_mode: bool, autoincrement: bool) -> float:
+        """Return NaN when autoincrement is enabled to ensure updates."""
+        return float("nan") if autoincrement else False
+
+    def process_text(self, text: str, node_id, seed: int = 0, counter: int = -1,
+                    shuffle_mode: bool = False, autoincrement: bool = False,
+                    input_text: str = None) -> Tuple[str, int]:
+        """
+        Process the input text, replacing {a|b|c} patterns with choices.
+
+        Args:
+            text: Input text with patterns
+            seed: Random seed (used in normal mode)
+            counter: Position counter (-1 for initial state)
+            shuffle_mode: Whether to use shuffle mode
+            autoincrement: Whether to automatically increment counter
+            input_text: Optional prefix text
+
+        Returns:
+            Tuple of (processed_text, current_counter)
+        """
+        try:
+            # Get all possible combinations
+            combinations = self.expand_pattern(text)
+            total_combinations = len(combinations)
+
+            # Update counter state
+            if counter == -1 and autoincrement:
+                if self.instance_counter == -1:
+                    self.instance_counter = 0
+                else:
+                    self.instance_counter = (self.instance_counter + 1) % total_combinations
+            elif counter != -1:
+                if counter != self.instance_counter:
+                    self.instance_counter = counter
+                elif autoincrement:
+                    self.instance_counter = (self.instance_counter + 1) % total_combinations
+
+            # Select combination
+            if shuffle_mode:
+                combination_index = self.instance_counter % total_combinations
+            else:
+                rng = random.Random(seed + self.instance_counter)
+                combination_index = rng.randrange(total_combinations)
+
+            result = self.get_combination(combinations, combination_index)
+
+            # Add input_text if provided
+            if input_text:
+                result = f"{input_text.strip()} {result}"
+
+            print(f"Generated text: {result} (combination {combination_index + 1}/{total_combinations})")
+            return (result, self.instance_counter)
+
+        except Exception as e:
+            print(f"Error processing text: {str(e)}")
+            return (text, self.instance_counter)
